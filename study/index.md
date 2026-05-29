@@ -242,6 +242,15 @@
 8. 다음 Phase 연결
 ```
 
+### 9.1 Phase 외 참고 문서
+
+Phase 문서 외에, 빠른 참조용 치트시트와 특정 기술을 깊게 다룬 분석 문서가 있습니다.
+
+- [cheat-sheet.md](cheat-sheet.md) — Flame 핵심 API·패턴 빠른 참조(렌더·priority·World·카메라·입력·클릭이동·anchor)
+- [tech-auto-targeting.md](tech-auto-targeting.md) — 드래그 경로 기반 자동·순차 몬스터 공격(드래그 타게팅 + 오토배틀러) 구현 분석
+- [game-glossary.md](game-glossary.md) — 게임 용어 정리 / [resources.md](resources.md) — 학습 자료 / [flame-official-packages.md](flame-official-packages.md) — 공식 패키지
+- [example/](example/) — 단계별 Hello Flame 예제(키보드 이동, 애니메이션, 게임 맵 기물 등)
+
 ---
 
 ## 10. 진행 체크리스트

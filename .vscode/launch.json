@@ -13,6 +13,20 @@
             "deviceId": "iPhone 17 Pro Max"
         },
         {
+            "name": "study - JaeHo16",
+            "request": "launch",
+            "type": "dart",
+            "program": "lib/main.dart",
+            "deviceId": "00008140-001C24C93E93001C"
+        },
+        {
+            "name": "study - iPhone 17 Pro Max",
+            "request": "launch",
+            "type": "dart",
+            "program": "lib/main.dart",
+            "deviceId": "iPhone 17 Pro Max"
+        },
+        {
             "name": "study (profile mode)",
             "request": "launch",
             "type": "dart",

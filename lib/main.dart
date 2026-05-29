@@ -10,10 +10,6 @@ import 'package:flame/game.dart';
 //   이 줄이 빠지면 `with KeyboardEvents`에서 컴파일 에러가 납니다.
 import 'package:flame/input.dart';
 
-// flame/events.dart : TapCallbacks mixin과 TapDownEvent 등 포인터(탭) 입력 타입.
-//   World에 `with TapCallbacks`를 붙이고 onTapDown을 쓰려면 이 import가 필요합니다.
-import 'package:flame/events.dart';
-
 // flutter/material.dart : runApp, Colors 등 Flutter 기본 도구.
 //   여기에서는 GameWidget을 Flutter 위젯 트리에 띄우기 위해 필요합니다.
 import 'package:flutter/material.dart';
@@ -21,9 +17,11 @@ import 'package:flutter/material.dart';
 // flutter/services.dart : LogicalKeyboardKey, KeyEvent 등 키보드 입력 타입.
 import 'package:flutter/services.dart';
 
-// flutter/gestures.dart : PointerScrollEvent(마우스 휠)와
-//   PointerPanZoomUpdateEvent(트랙패드·매직 마우스 제스처) 타입.
-//   GameWidget을 Listener로 감싸 마우스 휠 줌을 직접 처리하기 위해 필요합니다.
+// flutter/gestures.dart : 포인터 입력 타입 모음.
+//   - PointerScrollEvent(마우스 휠) / PointerPanZoomUpdateEvent(트랙패드·매직 마우스)
+//     → 데스크톱 줌(Listener)에 사용.
+//   - ScaleGestureRecognizer
+//     → 모바일 터치의 탭 이동 + 핀치 줌(RawGestureDetector)에 사용.
 import 'package:flutter/gestures.dart';
 
 /// 플레이어가 가질 수 있는 상태(state)를 표현하는 열거형입니다.
@@ -45,23 +43,32 @@ void main() {
   // 일반 Flutter 앱에서 MaterialApp을 runApp에 넣는 것처럼,
   // Flame 게임에서는 GameWidget에 게임 객체를 넣어 실행합니다.
   //
-  // 여기서는 GameWidget을 Flutter의 Listener로 한 번 더 감쌉니다.
+  // 입력은 장치·제스처마다 경로가 달라, Listener + RawGestureDetector로 나눠 처리합니다.
   //
-  // 왜 Flame의 ScrollDetector(onScroll)를 안 쓰나?
-  //   ScrollDetector는 PointerScrollEvent(전통적인 "클릭형" 마우스 휠)만 받습니다.
-  //   그런데 macOS의 트랙패드와 애플 매직 마우스의 표면 스와이프는
-  //   PointerScrollEvent가 아니라 "트랙패드 제스처"(PointerPanZoom*)로 전달되어
-  //   ScrollDetector에 잡히지 않습니다. 그래서 두 경로를 모두 직접 처리합니다.
+  //   [데스크톱 전용]
+  //   • 마우스 휠            → Listener.onPointerSignal (PointerScrollEvent) → 줌
+  //   • 트랙패드/매직마우스   → Listener.onPointerPanZoomUpdate (PointerPanZoom) → 줌
+  //   [터치·마우스 공통]
+  //   • 단일 탭             → TapGestureRecognizer        → PC를 그 지점으로 이동
+  //   • 롱탭               → LongPressGestureRecognizer  → 줌 1.0 + PC 중앙 복귀
+  //   • 1손가락 드래그       → ScaleGestureRecognizer(1)   → 카메라 패닝(맵 둘러보기)
+  //   • 2손가락 핀치         → ScaleGestureRecognizer(≥2)  → 줌
+  //
+  // 왜 Flame 기본 입력(ScrollDetector·TapCallbacks)을 안 쓰나?
+  //   - ScrollDetector는 PointerScrollEvent만 받아 트랙패드/매직 마우스를 놓칩니다.
+  //   - 터치 핀치(두 손가락)를 TapCallbacks가 각 손가락의 "탭"으로 오인해 캐릭터를
+  //     이동시켰습니다. 탭을 TapGestureRecognizer로 분리하면, 탭은 본질적으로
+  //     단일 포인터라 두 손가락 핀치에서는 발동조차 하지 않아 충돌이 사라집니다.
   runApp(
     Listener(
-      // ① 일반 마우스 휠 — PointerScrollEvent로 들어옵니다.
+      // ① 데스크톱 마우스 휠 — PointerScrollEvent.
       onPointerSignal: (event) {
         if (event is PointerScrollEvent) {
           // 휠을 위로 굴리면 dy < 0 → 확대, 아래로 굴리면 dy > 0 → 축소.
           game.zoomBy(event.scrollDelta.dy < 0 ? 1.1 : 1 / 1.1);
         }
       },
-      // ② 트랙패드 / 매직 마우스 표면 스와이프 — PointerPanZoom 제스처로 들어옵니다.
+      // ② 데스크톱 트랙패드 / 매직 마우스 표면 스와이프 — PointerPanZoom 제스처.
       onPointerPanZoomUpdate: (event) {
         // 작은 변화량이 연속으로 들어오므로 한 번에 조금씩만(1.03배) 줌합니다.
         // 손가락을 위로 밀면 panDelta.dy < 0 → 확대.
@@ -69,7 +76,69 @@ void main() {
         final dy = event.panDelta.dy;
         if (dy != 0) game.zoomBy(dy < 0 ? 1.03 : 1 / 1.03);
       },
-      child: GameWidget(game: game),
+      // 아래 3개 제스처는 터치·마우스 공통입니다. trackpad는 모든 recognizer에서
+      // 제외했습니다 — 트랙패드/매직 마우스의 표면 스와이프(PointerPanZoom)는 위
+      // Listener가 줌으로 전담하므로, 여기서 또 받으면 "이중 줌"이 됩니다.
+      child: RawGestureDetector(
+        gestures: <Type, GestureRecognizerFactory>{
+          // ① 단일 탭 → 그 지점으로 PC 이동.
+          TapGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+            () => TapGestureRecognizer(
+              supportedDevices: const {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.mouse,
+              },
+            ),
+            (TapGestureRecognizer instance) {
+              // localPosition은 GameWidget(canvas) 좌표 → globalToLocal로 월드 변환.
+              instance.onTapUp = (d) {
+                game.handleTap(Vector2(d.localPosition.dx, d.localPosition.dy));
+              };
+            },
+          ),
+          // ② 롱탭 → 줌 1.0 + PC를 화면 중앙으로(추적 재개).
+          LongPressGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+            () => LongPressGestureRecognizer(
+              supportedDevices: const {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.mouse,
+              },
+            ),
+            (LongPressGestureRecognizer instance) {
+              instance.onLongPress = game.resetView;
+            },
+          ),
+          // ③ 1손가락 드래그 → 카메라 패닝 / 2손가락 핀치 → 줌.
+          //   탭이 위 TapGestureRecognizer로 분리됐으므로, 두 손가락 핀치에서는
+          //   탭이 발동하지 않습니다(= 핀치 중 PC가 이동하지 않습니다).
+          ScaleGestureRecognizer:
+              GestureRecognizerFactoryWithHandlers<ScaleGestureRecognizer>(
+            () => ScaleGestureRecognizer(
+              supportedDevices: const {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.mouse,
+              },
+            ),
+            (ScaleGestureRecognizer instance) {
+              instance
+                ..onStart = (d) {
+                  game.handleScaleStart(d.pointerCount);
+                }
+                ..onUpdate = (d) {
+                  // focalPointDelta = 직전 프레임 대비 focal 이동량(화면 픽셀).
+                  game.handleScaleUpdate(
+                    d.pointerCount,
+                    d.scale,
+                    Vector2(d.focalPointDelta.dx, d.focalPointDelta.dy),
+                  );
+                };
+            },
+          ),
+        },
+        child: GameWidget(game: game),
+      ),
     ),
   );
 }
@@ -107,11 +176,6 @@ class MyGame extends FlameGame with KeyboardEvents {
   // 결과적으로 키를 꾹 누르고 있는 동안에는 매 프레임 그 키가 들어 있는
   // 집합이 전달되므로 캐릭터가 계속 이동하게 됩니다.
   final keys = <LogicalKeyboardKey>{};
-
-  // 기본 world 대신 탭 입력을 받을 수 있는 MyWorld를 사용하도록 교체합니다.
-  // FlameGame 생성자의 world: 인자에 넘기면, 부모의 `world` getter가 이
-  // 인스턴스를 가리키게 되어 아래 onLoad의 world.add(...)가 그대로 동작합니다.
-  MyGame() : super(world: MyWorld());
 
   @override
   Future<void> onLoad() async {
@@ -177,21 +241,74 @@ class MyGame extends FlameGame with KeyboardEvents {
     return KeyEventResult.handled;
   }
 
-  /// 현재 카메라 줌에 배율 [multiplier]를 곱하고 0.5~3.0 범위로 제한합니다.
-  /// main()의 Listener(마우스 휠/트랙패드 콜백)에서 호출됩니다.
+  /// 줌을 절대값 [value]로 설정하고 0.5~3.0 범위로 제한합니다.
   ///
   /// 줌은 카메라의 viewfinder가 담당합니다(치트시트 §5.6 참고).
   ///   1.0 = 원본 배율, 2.0 = 2배 확대, 0.5 = 절반 축소
-  ///
-  /// 덧셈이 아니라 곱셈(multiplier)을 쓰는 이유: 어느 배율에서 굴려도 체감
-  /// 변화량이 비율로 일정해, 줌이 자연스럽게 느껴집니다.
-  void zoomBy(double multiplier) {
-    final double next = camera.viewfinder.zoom * multiplier;
+  /// zoom은 0 이하가 될 수 없고(0 이하면 내부 assert로 크래시), 너무 크거나
+  /// 작으면 화면이 깨지므로 범위를 제한합니다. (clamp는 num을 반환하므로
+  /// toDouble()로 다시 double에 맞춥니다.)
+  void zoomTo(double value) {
+    camera.viewfinder.zoom = value.clamp(0.5, 3.0).toDouble();
+  }
 
-    // zoom은 0 이하가 될 수 없고(0 이하면 내부 assert로 크래시),
-    // 너무 크거나 작으면 화면이 깨지므로 0.5 ~ 3.0 범위로 제한합니다.
-    // clamp는 num을 반환하므로 toDouble()로 다시 double로 맞춰 줍니다.
-    camera.viewfinder.zoom = next.clamp(0.5, 3.0).toDouble();
+  /// 현재 줌에 배율 [multiplier]를 곱합니다. (데스크톱 휠/트랙패드용)
+  /// 덧셈이 아니라 곱셈을 쓰는 이유: 어느 배율에서든 체감 변화가 비율로
+  /// 일정해 줌이 자연스럽게 느껴집니다.
+  void zoomBy(double multiplier) => zoomTo(camera.viewfinder.zoom * multiplier);
+
+  // ── 카메라 추적 상태 ─────────────────────────────────────────────────
+  //
+  // 시작 시 카메라는 player를 따라갑니다(onLoad의 camera.follow). 1손가락
+  // 드래그로 맵을 둘러보면 추적을 끄고, 롱탭(resetView)으로 다시 켭니다.
+  bool _cameraFollowing = true;
+
+  // 핀치 시작 시점의 줌. 핀치 진행 중 이 값에 누적 배율(scale)을 곱합니다.
+  double _gestureBaseZoom = 1.0;
+
+  /// 단일 탭 → 탭한 지점([canvasPoint], 게임 위젯 좌표)으로 PC를 이동시킵니다.
+  /// globalToLocal이 현재 카메라(패닝·줌 반영) 기준으로 canvas→월드 변환을 해 줍니다.
+  void handleTap(Vector2 canvasPoint) {
+    player.setTarget(camera.globalToLocal(canvasPoint));
+  }
+
+  /// 드래그/핀치 제스처가 시작될 때 호출. 핀치 줌의 기준 줌을 저장합니다.
+  void handleScaleStart(int pointerCount) {
+    _gestureBaseZoom = camera.viewfinder.zoom;
+  }
+
+  /// 드래그/핀치 진행 중 호출됩니다.
+  ///   [pointerCount] >= 2 → 핀치 줌 (시작 줌 × 누적 배율 [scale])
+  ///   [pointerCount] == 1 → 카메라 패닝 ([canvasDelta]만큼 맵을 끌어 이동)
+  void handleScaleUpdate(int pointerCount, double scale, Vector2 canvasDelta) {
+    if (pointerCount >= 2) {
+      // 두 손가락 핀치 → 줌만. (패닝·탭 없음)
+      zoomTo(_gestureBaseZoom * scale);
+      return;
+    }
+
+    // 한 손가락 드래그 → 카메라 패닝(맵 둘러보기).
+    // 처음 패닝하는 순간 player 추적을 끕니다. 안 끄면 FollowBehavior가 매
+    // 프레임 카메라를 player로 되돌려 패닝이 곧바로 취소됩니다.
+    if (_cameraFollowing) {
+      camera.stop(); // FollowBehavior 제거
+      _cameraFollowing = false;
+    }
+
+    // 화면 이동량(canvasDelta)을 월드 이동량으로 변환합니다. 줌이 클수록 같은
+    // 화면 이동이 더 작은 월드 이동이 되도록 zoom으로 나눕니다. 손가락 방향과
+    // 반대로 카메라를 옮겨야 "맵을 손으로 끌어오는" 느낌이 됩니다(그래서 -=).
+    // viewfinder.position의 getter는 계산값이라 setFrom이 아닌 -= (재대입)으로 변경합니다.
+    camera.viewfinder.position -= canvasDelta / camera.viewfinder.zoom;
+  }
+
+  /// 롱탭 → 줌을 1.0으로 되돌리고, PC를 화면 중앙에 둔 뒤 추적을 재개합니다.
+  void resetView() {
+    zoomTo(1.0);
+    camera.stop(); // 패닝 잔여/이펙트 정리(혹시 남아 있을 FollowBehavior 포함)
+    camera.viewfinder.position = player.position.clone(); // 즉시 중앙으로 점프
+    camera.follow(player); // 이후 다시 따라가기
+    _cameraFollowing = true;
   }
 
   /// 매 프레임 Flame이 호출해 주는 게임 루프 메서드입니다.
@@ -208,26 +325,6 @@ class MyGame extends FlameGame with KeyboardEvents {
     // 현재 눌린 키 집합과 dt를 player에 전달.
     // player는 이 정보로 자신의 위치를 옮기고 애니메이션 상태를 전환합니다.
     player.applyInput(keys, dt);
-  }
-}
-
-/// 게임 맵(세계)인 동시에 탭 입력을 받는 World입니다.
-///
-/// World에 `with TapCallbacks`를 붙이면, 이 World 영역에서 일어난 탭을
-/// onTapDown으로 받을 수 있습니다. 가장 큰 이점은 좌표계입니다.
-/// event.localPosition이 카메라 변환을 거친 "월드 좌표"로 들어오므로,
-/// 게임/위젯에 직접 탭 mixin을 붙였을 때 필요한 camera.globalToLocal()
-/// 변환을 생략할 수 있습니다.
-///
-/// `HasGameReference<MyGame>`로 game.player에 접근해, 탭한 지점을 플레이어의
-/// 이동 목적지로 넘겨 줍니다.
-class MyWorld extends World with TapCallbacks, HasGameReference<MyGame> {
-  /// 화면(이 World 영역)을 탭하면 Flame이 호출해 주는 메서드입니다.
-  @override
-  void onTapDown(TapDownEvent event) {
-    // event.localPosition : 이 World 좌표계 기준 탭 위치 = 곧 월드 좌표.
-    // 그대로 플레이어의 이동 목적지로 설정합니다.
-    game.player.setTarget(event.localPosition);
   }
 }
 
@@ -251,7 +348,7 @@ class Player extends SpriteAnimationGroupComponent
   // 직접 이동을 시작하면 다시 null로 비워집니다.
   Vector2? _target;
 
-  /// 탭한 지점을 이동 목적지로 설정합니다. (MyWorld.onTapDown에서 호출)
+  /// 탭한 지점을 이동 목적지로 설정합니다. (MyGame.handleTap에서 호출)
   void setTarget(Vector2 target) {
     _target = target;
   }

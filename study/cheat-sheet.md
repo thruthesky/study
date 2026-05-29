@@ -567,7 +567,109 @@ player_walk.png  (가로 256 × 세로 32, 8칸이 가로로 나열)
 > `SpriteAnimationData.sequenced(..., amountPerRow: 4)`로 처리하고, **공격·사망처럼
 > 한 번만 재생**해야 하는 모션은 `loop: false`를 줍니다.
 
-### 5.9 클릭-투-무브(click-to-move) — 탭으로 목적지까지 이동
+### 5.9 렌더링·`priority`·깊이 정렬(y-sorting)
+
+"이미지를 add하면 알아서 그려지나? 누가 위에 보이나? 캐릭터가 나무 앞에 섰다
+뒤로 가면?" — 한 묶음으로 답합니다. (모든 사실은 flame 1.37.0 공식 문서·소스로 확인)
+
+#### ① add만 하면 Flame이 매 프레임 자동으로 그린다 — `render` 직접 호출 불필요
+
+스프라이트 1장이든 애니메이션이든 똑같습니다. 게임 루프가 매 틱 트리를 따라
+`renderTree`를 재귀 호출하므로, **트리에 `add`(mount)되어 있기만 하면** 자동으로
+그려집니다. `SpriteComponent`·`SpriteAnimationComponent`는 `render()`가 이미 구현돼
+있어 `sprite`/`animation`만 세팅하면 됩니다(애니메이션은 `update`에서 프레임도 자동 진행).
+
+```dart
+class Tree extends SpriteComponent with HasGameReference<MyGame> {
+  @override
+  Future<void> onLoad() async {
+    sprite = await game.loadSprite('tree.png'); // 세팅만 하면 끝. render 호출 X
+    // size를 안 줘도 됨 — 아래 ✅ 참고
+  }
+}
+```
+
+> ✅ **size 걱정은 생각보다 적습니다.** `SpriteComponent`/`SpriteAnimationComponent`는
+> **autoResize가 기본 켜짐**이라, `sprite`를 세팅하면 `size`를 생략해도 원본
+> (`srcSize`)으로 자동 설정됩니다. "size가 0이라 안 보이는" 문제는 주로 **`PositionComponent`를
+> 직접 상속**해 size를 안 준 경우입니다.
+
+**그래도 안 보일 때 체크리스트**: ① 트리에 `add` 안 됨(부모 미마운트) ② `PositionComponent`
+직접 상속인데 `size=0` ③ 이미지 로드 실패/경로 오타 ④ 화면 밖 `position`/`anchor`
+⑤ `HasVisibility`로 `isVisible=false` ⑥ `opacity`/`scale` 0 ⑦ 다른 컴포넌트에 완전히 가려짐.
+
+#### ② `priority` — 그리는 순서(z-index)
+
+모든 `Component`는 `int priority`를 가집니다(기본 `0`, 음수도 가능).
+
+- **값이 클수록 나중에 = 위에** 그려집니다(Flutter/CSS의 `z-index`와 같은 발상).
+- **같은 값이면 add한 순서(FIFO)** — 먼저 넣은 게 아래, 나중에 넣은 게 위.
+- ⚠️ **비교는 "같은 부모의 형제(sibling)끼리만".** 렌더 순서의 **1차 기준은 트리
+  구조**(부모가 먼저 그려지고 그 위에 자식), priority는 그 안에서의 2차 기준입니다.
+  → **다른 부모에 속한 컴포넌트는 priority를 아무리 높여도** 다른 가지를 넘어 앞으로
+  나올 수 없습니다(부모 서브트리가 통째로 그려지므로).
+- ⚠️ **`update()` 호출 순서도 priority를 따릅니다.** (흔한 오해 — priority가 "그리는
+  순서 전용"이라고 알기 쉬운데, 실제로 `updateTree`와 `renderTree`가 **같은 정렬
+  컬렉션**을 순회합니다. update에선 시각적 의미는 없고 처리 순서만 결정.)
+- **런타임 변경**: `component.priority = n;` → 그 부모의 형제 리스트가 재정렬되어
+  **같은 틱의 렌더 직전**에 반영됩니다. 단 재정렬은 **형제 전체를 다시 정렬**하므로
+  **정적 기물은 한 번만**(생성 시) 설정하고 건드리지 않는 게 좋습니다.
+
+#### ③ "통과(pass)"와 `priority`는 완전히 별개다 ⚠️
+
+사용자가 묶어 물었지만, 둘은 **서로 무관한 시스템**입니다.
+
+| 구분 | 결정하는 것 | 담당 |
+|---|---|---|
+| **통과/막힘** (겹쳐서 지나가나, 부딪혀 멈추나) | 충돌 시스템 | `Hitbox` + `CollisionType` + `CollisionCallbacks` |
+| **겹쳤을 때 누가 위에 보이나** | 렌더 z-순서 | `priority` |
+
+- `priority`는 통과 여부에 **아무 영향이 없습니다.** 그냥 "겹친 그림 중 누가 위냐"만 정함.
+- 게다가 **Flame의 충돌은 "감지/통지"만** 합니다. 부딪혔다고 자동으로 멈추지 않아요.
+  막으려면 `onCollisionStart`/`onCollision`에서 **직접 위치 보정**을 구현해야 합니다.
+  아무것도 안 하면 두 객체는 그냥 겹친 채 **통과**합니다. (충돌은 Phase 2에서 본격적으로)
+
+#### ④ 캐릭터가 기물 앞↔뒤로 — y-sorting(깊이 정렬) ⭐
+
+2.5D의 핵심입니다. **발끝 y가 클수록(화면에서 더 아래 = 더 가까움) priority를 높게**
+주면, 캐릭터가 나무보다 아래에 서면 나무를 가리고, 나무 뒤(위)로 가면 나무에 가려집니다.
+매 프레임 priority를 y로 다시 계산하면 그 **전환이 저절로** 일어납니다.
+
+```dart
+class Character extends SpriteComponent with HasGameReference<MyGame> {
+  Character() : super(anchor: Anchor.bottomCenter); // 기준점을 '발끝'으로
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    priority = position.y.toInt();   // 발끝 y → priority. 깊이 정렬의 전부
+  }
+}
+```
+
+- **앵커는 `Anchor.bottomCenter`**(발끝)가 자연스럽습니다. priority는 `int`라 `y`를
+  `toInt()`로 양자화하며, 겹침 깜빡임이 생기면 `(position.y * 10).toInt()`처럼 스케일을 곱합니다.
+- ⚠️ **Flame에 y-sort 자동 컴포넌트는 없습니다(1.37 기준).** 위처럼 **수동 갱신이 표준**.
+  (1.37의 `HasAutoBatchedChildren`은 draw call 배칭 최적화지 y-sort가 아님.)
+- **정렬은 같은 부모(레이어) 안에서만** 일어납니다. y-sort에 참여할 캐릭터·기물은 **같은
+  레이어**에 두고, 바닥 타일/하늘은 별도 레이어(고정 priority)로 분리하세요.
+- **비용**: 정적 기물은 `onLoad`에서 1회만, **움직이는 객체만** 매 프레임 갱신. `int`
+  값이 그대로면 재정렬이 자동 스킵되므로 멈춰 있는 객체는 사실상 공짜입니다.
+- 완전한 공식·다층 정렬·tiebreaker는 [03-phase3-isometric-2.5d.md](03-phase3-isometric-2.5d.md) §4, 용어는 [game-glossary.md](game-glossary.md) Y-sort 항목 참고.
+
+#### ⑤ 용어 — 기물·PC·몬스터는 모두 "Component"
+
+맞습니다. Flame에는 **`game object`라는 별도 타입이 없습니다.** 화면에 나오는 모든
+것은 `Component`(위치가 필요하면 `PositionComponent` 계열)입니다. `FlameGame`·`World`·
+카메라조차 전부 `Component`입니다. (Unity의 GameObject에 빗댄 설명은 주석에만 등장할 뿐
+Flame의 타입명이 아닙니다.)
+
+> **한 줄 정리**: add만 하면 **자동 렌더**(스프라이트 컴포넌트는 size도 자동). 누가 위에
+> 보이나는 **`priority`**(같은 부모 형제끼리, 클수록 위, update 순서까지 좌우). **통과
+> 여부는 priority가 아니라 충돌 시스템**. 캐릭터 앞↔뒤 가림은 **`priority = 발끝 y`
+> 매 프레임 갱신**(y-sorting, 수동). 그리고 모든 기물은 **Component**다.
+
+### 5.10 클릭-투-무브(click-to-move) — 탭으로 목적지까지 이동
 
 화면을 한 번 탭하면 그 지점까지 캐릭터가 스스로 걸어가는 **디아블로·LoL·RTS식 이동**입니다.
 핵심 사고 전환은 "**탭은 순간(1회), 이동은 지속(매 프레임)**"이라는 분리입니다. 탭 콜백은
@@ -691,6 +793,7 @@ game.player.setTarget(event.localPosition);
 | 키보드로 움직이는데 탭이 끼어듦(또는 그 반대) | 두 입력이 같은 `velocity`를 두고 충돌 | `if (velocity.length > 0) _target = null;` — 키 입력이 있으면 탭 취소 |
 | 키를 뗐는데 캐릭터가 계속 흘러감 | `velocity`가 이전 프레임 값을 유지 | `final velocity = Vector2.zero();`로 매 프레임 초기화(§5.4) |
 | 대각선이 직선보다 빠름 | `(1, -1)`처럼 길이 √2인 벡터를 그대로 사용 | `velocity.normalized()`로 길이를 1로 정규화 |
+| 탭한 곳과 캐릭터가 **살짝 어긋나** 멈춤 | `anchor`가 가리키는 점(프레임 중심 등)이 그림 속 캐릭터와 다름 | `anchor`를 발끝(`bottomCenter`)·캐릭터 위치로 맞춤 → 바로 아래 절 |
 
 > ⚠️ 스냅 처리에서 `return`을 빼면, 같은 프레임에서 아래의 `position += ...`가 한 번
 > 더 실행되어 목적지를 지나칩니다. "도착했으면 즉시 끝낸다"가 떨림 방지의 핵심입니다.
@@ -708,6 +811,74 @@ game.player.setTarget(event.localPosition);
 > 줌이 2배여도 `localPosition`은 월드 좌표라 그대로 쓰면 되고, `canvasPosition`은
 > 화면 픽셀이라 별도 역변환이 필요합니다.
 
+#### `anchor`와 발끝 정렬 — 클릭 지점에 "무엇"이 도착하나
+
+여기까지는 "**어디**(월드 좌표)로 갈지"를 정확히 받는 법이었습니다. 마지막 퍼즐은 그
+좌표에 **캐릭터의 어느 점**이 도착하느냐 — 바로 `anchor`입니다.
+
+> **`position`은 "`anchor`가 가리키는 점이 도착할 좌표"입니다.** (공식 문서: *the
+> position is where the anchor point will end up after the component is translated*)
+> 그래서 클릭 지점에 무엇이 오는지는 **전적으로 `anchor`가 결정**합니다.
+
+**증상**: 탭 좌표(`_target`)는 정확한데 캐릭터가 살짝 빗나가 멈춘다.
+**원인**: `anchor`는 **컴포넌트(=텍스처 프레임 `size`)의 비율점**일 뿐, **그림 속 캐릭터
+픽셀을 인식하지 않습니다.** `Anchor.center`(=`Anchor(0.5, 0.5)`)는 64×64 프레임의
+`(32, 32)`를 가리키는데, 캐릭터가 프레임 안에서 한쪽에 치우쳐 그려져 있으면 그 점은
+**캐릭터가 아니라 빈 패딩**입니다. 그래서 `position`은 정확해도 캐릭터가 그 차이만큼 밀려
+보입니다.
+
+```text
+64×64 프레임 (anchor=center가 가리키는 점 ● = (32,32))
+┌───────────────┐
+│         ▓▓▓   │  ▓ = 실제 캐릭터 그림(상단 오른쪽에 치우침)
+│         ▓▓▓   │  ● = position이 클릭 지점에 맞추는 점 = 빈 패딩
+│      ●        │  → 클릭 지점엔 ●가 오고, 캐릭터(▓)는 우상단으로 밀려 보임
+│  (빈 패딩)     │     어긋난 거리 = (캐릭터 기준점 − 프레임 비율점)
+└───────────────┘
+```
+
+**해결**: 클릭 지점에 **발**을 맞추려면 `anchor`를 발끝으로 둡니다. 그 순간 `position`의
+의미가 "발끝의 월드 좌표"로 바뀌어, §5.10 ④의 도착 스냅(`position.setFrom(_target!)`)이
+그대로 발 기준이 됩니다.
+
+```dart
+// 발끝이 프레임 하단 중앙에 그려져 있을 때
+class Player extends SpriteAnimationGroupComponent with HasGameReference<MyGame> {
+  Player() : super(anchor: Anchor.bottomCenter); // = Anchor(0.5, 1.0) = 발끝
+  // ...
+}
+// 이제 position = '발끝의 월드 좌표' → 탭 좌표를 그대로 써도 발이 정확히 그 지점에 섬
+```
+
+발끝이 하단 중앙이 **아니라** 프레임 안에서 어긋나 있으면(예: 텍스처 `(30, 63)` 픽셀),
+맞추려는 픽셀을 프레임 크기로 나눠 **커스텀 앵커**를 만듭니다 — `Anchor(px/W, py/H)`:
+
+```dart
+super(anchor: const Anchor(30 / 64, 63 / 64)); // = Anchor(0.469, 0.984)
+```
+
+**세 가지 해결 방법** (상황에 맞게 선택):
+
+| 방법 | 어떻게 | 장점 | 단점 |
+|---|---|---|---|
+| A. 이미지 수정 | 시트에서 캐릭터를 프레임 중앙/하단중앙에 재배치 | `Anchor.center`/`bottomCenter`만 쓰면 됨 | 원본 아트 수정, 프레임마다 작업 |
+| B. 커스텀 anchor ✅ | 치우친 비율로 `Anchor(px/W, py/H)` | 이미지 안 건드림, 한 줄 | 매직넘버, 프레임마다 위치 같아야 함 |
+| C. 부모/자식 분리 | 빈 `PositionComponent`(논리=발끝) + 자식 `SpriteComponent`를 **자식 `position`** 오프셋 | 로직·그림 분리, 그림자·체력바 부착 쉬움 | 구조 복잡 |
+
+> ⚠️ **C의 함정**: 오프셋은 반드시 **자식의 `position`**으로 줍니다. 부모 `anchor`를
+> 바꿔 자식 위치를 맞추려 하면 실패합니다 — **자식의 로컬 원점은 부모 `anchor`와 무관하게
+> 항상 부모의 top-left**이기 때문입니다(공식 문서가 명시한 흔한 함정).
+
+> ⚠️ **`position`은 "부모 좌표계" 기준**입니다. 캐릭터가 `world`(루트)의 직속 자식인
+> 일반적 구조에선 월드 좌표를 그대로 넣어도 되지만, **다른 컴포넌트의 자식으로 중첩**되면
+> `position` 대신 `absolutePosition`을 써야 합니다.
+
+> **§5.9 y-sorting과의 관계 — 같은 앵커가 두 문제를 동시에 해결**: 발끝 기준(`bottomCenter`)으로
+> 두면 **가림 순서(누가 위에 보이나, §5.9)** 와 **클릭 도착(어디에 서나, 여기)** 이 둘 다
+> 자연스러워집니다. 그래서 2.5D 캐릭터는 `Anchor.bottomCenter`가 사실상 기본값입니다.
+> (참고: 현재 [lib/main.dart](lib/main.dart)는 `Player`·기물이 모두 `Anchor.center`라,
+> 발 기준 도착·자연스러운 깊이를 원하면 `bottomCenter`로 바꾸고 배치 좌표를 함께 조정하세요.)
+
 #### 확장 아이디어 (현재 코드와의 관계 표기)
 
 | 기능 | 현재 코드 | 어디서 시작하나 |
@@ -716,6 +887,7 @@ game.player.setTarget(event.localPosition);
 | 탭 지점에 마커(이펙트) 표시 | ❌ 미구현 | `onTapDown`에서 그 위치에 임시 컴포넌트를 `world.add` 후 잠시 뒤 `removeFromParent` |
 | 도착 시 콜백(`onArrive`) | ❌ 미구현 | `Player`에 `VoidCallback?` 필드 추가, 스냅 처리(`position.setFrom`) 직후 호출 |
 | 드래그로 목적지 지정 | ❌ 미구현 | World에 `DragCallbacks`를 더해 `onDragEnd`의 `localPosition`을 목적지로 |
+| 드래그 경로 주위 몬스터 **자동·순차 공격** | ❌ 미구현 | `DragCallbacks`로 경로 수집 → 선분-점 거리로 주위 몬스터 탐색 → 타겟 큐로 한 마리씩, 죽으면 다음. 상세 분석 → [tech-auto-targeting.md](tech-auto-targeting.md) |
 | 장애물 회피·경로탐색 | ❌ 미구현 | 현재는 직선 이동(나무·분수를 통과). 타일맵+pathfinding 또는 콜라이더 필요 |
 
 #### 한 줄 정리
@@ -725,3 +897,211 @@ game.player.setTarget(event.localPosition);
 > `position.setFrom`으로 스냅한다. 키보드가 눌리면 `_target`을 비워 직접 조종을
 > 우선한다.** (Flutter의 `onTapDown` + `setState`를, 게임에서는 "탭=목적지 저장"과
 > "루프=이동"으로 분리한 형태.)
+
+### 5.11 카메라 좌표 변환 & `visibleWorldRect`
+
+`CameraComponent` 2.0(현 flame 1.x 표준)은 **World 좌표 ↔ 화면(전역) 좌표 변환**과
+**"지금 화면에 보이는 월드 영역"** 을 직접 노출합니다. 입력 좌표를 월드로 옮기거나,
+화면 밖 오브젝트를 컬링(렌더 생략)할 때 핵심입니다.
+
+```dart
+// 화면(전역) 좌표 → 월드 좌표 (예: 터치 지점에 무언가 배치)
+final worldPoint = cam.globalToLocal(screenPosition);
+// 월드 좌표 → 화면 좌표 (예: 적 머리 위에 HUD 마커)
+final screenPoint = cam.localToGlobal(enemy.position);
+
+// 지금 카메라에 보이는 월드 영역(Rect). zoom/이동에 따라 매 프레임 갱신됨.
+final Rect view = cam.visibleWorldRect;
+if (!view.overlaps(enemy.toRect())) {
+  // 화면 밖 → 무거운 연산/렌더 스킵 (수동 컬링)
+}
+```
+
+- `visibleWorldRect`는 신기능이 아니라 **flame 1.6.0부터 있는 안정 API**입니다
+  (`CameraComponent`에서 `Rect` 반환). deprecate된 적 없습니다. 예전
+  `gameRef.camera.visibleWorldRect` 표기만 `game.camera.visibleWorldRect`로 바뀌었을
+  뿐(이는 `HasGameRef` deprecate인 1.28.0과 함께 정리된 명명 변화).
+- `viewfinder.angle`/`viewfinder.zoom` 동시 적용 역시 1.30 신기능이 아니라 **1.x 초기부터
+  있는 표준 기능**(§5.7)이므로, "특정 버전 이상에서만 가능"으로 오해하지 마세요.
+  (출처: Camera Component docs)
+- `CameraComponent.withFixedResolution(width: 800, height: 600, world: world)`(§5.5)을
+  쓰면 `visibleWorldRect`가 항상 **고정 논리 해상도를 기준으로** 계산되어, 기기 해상도가
+  달라도 동일한 컬링/배치 로직을 재사용할 수 있습니다.
+
+### 5.12 컴포넌트 쿼리 — `componentsAtPoint`
+
+**"이 화면 좌표 아래에 어떤 컴포넌트가 있나?"** 를 찾을 때 쓰는 표준 API입니다. 직접
+클릭 판정을 짤 필요 없이, 보통은 `TapCallbacks`/`DragCallbacks` 믹스인(§5.4)이
+내부적으로 이걸 사용해 적절한 컴포넌트에 이벤트를 라우팅합니다.
+
+```dart
+// game 또는 World에서 호출. 전역(화면) 좌표를 넘긴다.
+for (final component in world.componentsAtPoint(screenPosition)) {
+  if (component is Enemy) {
+    component.onClicked();
+    break; // 맨 위(최상단 priority)부터 순회됨
+  }
+}
+```
+
+- 반복자는 **위에 그려진(priority가 높은) 컴포넌트부터** 순서대로 내놓습니다 — DOM의
+  hit-testing과 동일한 직관(§5.9 priority 참고).
+- **좌표 변환을 자동 처리**하므로 카메라 zoom/translate가 적용돼 있어도 그대로 동작합니다.
+- 개별 컴포넌트에 클릭을 받게 하려면 직접 쿼리 대신 `with TapCallbacks` +
+  `onTapDown(TapDownEvent event)`를 쓰는 편이 권장됩니다(§5.4). 이때 `containsLocalPoint`를
+  오버라이드하면 사각형이 아닌 **hit 영역(원형 등)** 도 정의할 수 있습니다.
+
+### 5.13 `ComponentKey` — 컴포넌트 안정 참조
+
+`late final Player player` 필드를 직접 들고 다니기 애매한 상황(예: 깊은 트리 어딘가의
+컴포넌트를 다른 곳에서 찾아야 할 때)에서, **전역 키로 컴포넌트를 조회**합니다. Flutter의
+`GlobalKey`와 같은 발상입니다.
+
+```dart
+final playerKey = ComponentKey.named('player');
+
+world.add(Player(key: playerKey));
+
+// 이후 어디서든 (game 참조만 있으면) 안정적으로 조회
+final player = game.findByKey<Player>(playerKey);
+// 또는 모든 PositionComponent를 타입으로:
+final allEnemies = world.children.query<Enemy>();
+```
+
+- `ComponentKey.named(...)`는 **같은 이름이면 동일 키**로 취급되고, `ComponentKey.unique()`는
+  **매번 새 키**입니다.
+- 남발하면 결합도가 올라가므로, 정말 트리를 가로질러 참조해야 하는 **핵심 객체(플레이어,
+  보스)에만** 쓰세요. 단순 자식 접근은 필드 보관이나 `children.query<T>()`로 충분합니다.
+
+### 5.14 Effects 기초 — 선언형 애니메이션
+
+위치/회전/스케일/투명도 변화를 `update(dt)`에서 손으로 보간하지 않고, **`Effect`
+컴포넌트를 `add`해서 선언형으로** 처리합니다. 끝나면 자동으로 트리에서 제거되도록 할 수
+있습니다.
+
+```dart
+import 'package:flame/effects.dart';
+
+// 0.4초 동안 (200, 0) 만큼 부드럽게 이동 (ease-in-out)
+player.add(
+  MoveEffect.by(
+    Vector2(200, 0),
+    EffectController(duration: 0.4, curve: Curves.easeInOut),
+  ),
+);
+
+// 회전 + 반복 + 끝나면 자기 자신 제거
+enemy.add(
+  RotateEffect.by(
+    2 * pi, // 1회전(라디안). pi는 dart:math
+    EffectController(duration: 1, repeatCount: 3),
+  )..removeOnFinish = true,
+);
+
+// 깜빡임(피격 표현 등): 투명도를 0↔1로 왕복
+sprite.add(
+  OpacityEffect.fadeOut(
+    EffectController(duration: 0.1, alternate: true, repeatCount: 4),
+  ),
+);
+```
+
+- **자주 쓰는 Effect**: `MoveEffect.by/to`, `RotateEffect.by/to`, `ScaleEffect.by/to`,
+  `OpacityEffect.fadeIn/fadeOut`, `SizeEffect.by/to`, 그리고 색조를 입히는 `ColorEffect`.
+  flame 1.37.0에는 색조 변환 전용 `HueEffect`/`HueDecorator`도 추가되어(#3852) 스프라이트
+  색감을 손쉽게 바꿀 수 있습니다.
+- **`EffectController`가 타이밍/커브/반복을 전담**합니다(`duration`, `curve`,
+  `reverseDuration`, `alternate`, `repeatCount`, `infinite`, `startDelay`).
+- 카메라 셰이크는 별도 패키지 `flame_noise`의 `NoiseEffectController`를 `MoveEffect.by`와
+  조합해 구현합니다(Phase 2에서 다룸).
+- Effect는 **"한 번의 연출"** 에 적합하고, 지속적인 게임플레이 이동(WASD)은 §5.4처럼
+  `update(dt)` 폴링으로 처리하는 것이 원칙입니다.
+
+### 5.15 게임 맵에 기물 배치하기 — 나무·분수 같은 정지 오브젝트
+
+게임 맵(나무·바위·건물 등)을 만드는 일은 **별도의 `GameMap` 클래스가 필요한 게
+아닙니다.** `FlameGame`이 이미 들고 있는 `world`가 곧 맵이고(§5.6), 거기에 `add`만 하면
+됩니다. 플레이어를 추가하는 것과 완전히 같은 패턴입니다.
+
+```dart
+class Tree extends SpriteComponent with HasGameReference<MyGame> {
+  @override
+  Future<void> onLoad() async {
+    sprite = await game.loadSprite('tree.png');  // 정지 이미지 1장
+    size = Vector2(64, 128);
+    anchor = Anchor.center;
+  }
+}
+
+// onLoad 안에서: player를 add한 것과 동일하게 기물을 add
+await world.add(player);
+await world.add(Tree()..position = Vector2(1200, 800));  // 월드 절대 좌표
+```
+
+- **정지 기물 = `SpriteComponent`, 움직이는 캐릭터 = `SpriteAnimationGroupComponent`.**
+  안 움직이고 그림 1장이면 가벼운 쪽(`SpriteComponent`)을 씁니다(§5.1 계층).
+- **기물은 월드 좌표에 고정**합니다. 화면에서 흘러가 보이는 건 카메라가 움직여서지 기물이
+  움직이는 게 아닙니다(카메라/월드 분리, §5.5). 따라서 `position`은 `Vector2(1200, 800)`처럼
+  **맵 내 절대 좌표로** 박고, `size/2`(화면 중앙) 기준 배치는 학습용 편법으로만 쓰세요.
+
+**맵을 만드는 4가지 방법** — 규모가 커질수록 아래로 내려갑니다.
+
+| 규모 | 방법 | 요약 |
+|---|---|---|
+| 기물 ~10개 (학습) | 손으로 `world.add` 반복 | 위 코드 그대로 |
+| 수십~수백, 자주 수정 | 좌표를 **데이터(JSON/리스트)** 로 빼고 반복문으로 add | 코드와 데이터 분리 |
+| 맵 여러 종류, 통째 전환 | **`World` 상속한 커스텀 월드 클래스**(`VillageWorld` 등) | `super(world: VillageWorld())`로 끼움 |
+| 진짜 게임 맵 | **Tiled 에디터 + `flame_tiled`** | `.tmx`를 마우스로 그려 `TiledComponent.load(...)` |
+
+**좋은 맵의 4원칙**: ① 좌표를 코드에 박지 말고 **데이터로 분리** ② 렌더 순서를
+**`priority`로 지배**(2.5D는 y-sorting → §5.9) ③ **월드 좌표계로 통일** ④
+**`camera.setBounds(...)`로 맵 경계 부여**(§5.7).
+
+**맵이 복잡해질 때**: 화면 밖 기물은 그리지 않는 **컬링**(§5.11 `visibleWorldRect`),
+거대 맵은 **청크 분할 로딩**(Phase 6), 투사체·이펙트는 **객체 풀링**(`ComponentPool`,
+Phase 7), **정적/동적 레이어 분리**로 정적 기물 캐싱.
+
+### 5.16 게임 컨트롤 — 키보드·탭·드래그·핀치·줌 (3중 입력)
+
+현재 `lib/main.dart`의 "입력→동작" 전체. 입력 소스마다 들어오는 경로가 물리적으로 달라
+**성질에 맞는 3계층**으로 나눕니다.
+
+- **Listener** (가장 바깥, OS 포인터) — 데스크톱 줌. 마우스 휠 `onPointerSignal`(PointerScrollEvent)→`zoomBy(1.1)`, 트랙패드/매직마우스 `onPointerPanZoomUpdate`(PointerPanZoom)→`zoomBy(1.03)`.
+- **RawGestureDetector** — 터치·마우스 제스처. `TapGestureRecognizer`/`LongPressGestureRecognizer`/`ScaleGestureRecognizer` 3개를 등록(모두 `supportedDevices:{touch,mouse}`, **trackpad 제외**).
+- **FlameGame with KeyboardEvents** — `onKeyEvent`가 `keys` 집합을 교체 → `update`가 매 프레임 `player.applyInput(keys,dt)`로 **폴링**.
+
+**디바이스 × 제스처 매트릭스**
+
+| 장치 | 제스처 | 처리 위치 | 동작 |
+|---|---|---|---|
+| PC 마우스 | 휠 | `Listener.onPointerSignal` → `zoomBy(1.1 또는 1/1.1)` | 줌 |
+| PC 마우스 | 클릭(탭) | `TapGestureRecognizer.onTapUp` → `handleTap` | PC 이동 |
+| PC 마우스 | 길게 누름 | `LongPressGestureRecognizer.onLongPress` → `resetView` | 줌1.0+PC중앙 |
+| PC 마우스 | 드래그 | `ScaleGestureRecognizer`(pointerCount==1) | 카메라 패닝 |
+| 트랙패드/매직마우스 | 표면 스와이프 | `Listener.onPointerPanZoomUpdate` → `zoomBy(1.03 또는 1/1.03)` | 줌 |
+| 스마트폰 | 1손가락 탭 | `TapGestureRecognizer.onTapUp` → `handleTap` | PC 이동 |
+| 스마트폰 | 1손가락 길게 | `LongPressGestureRecognizer.onLongPress` → `resetView` | 줌1.0+PC중앙 |
+| 스마트폰 | 1손가락 드래그 | `ScaleGestureRecognizer`(pointerCount==1) | 카메라 패닝 |
+| 스마트폰 | 2손가락 핀치 | `ScaleGestureRecognizer`(pointerCount>=2) → `zoomTo(_gestureBaseZoom*scale)` | 줌 |
+| 키보드 | WASD/화살표 | `onKeyEvent` → `applyInput` | 캐릭터 이동 |
+
+**키보드/탭은 `applyInput`의 velocity로 합류** — WASD·화살표를 OR로 묶어 `+=`/`-=` 누적(상하 동시=상쇄), `normalized()`로 대각선 가속 방지, `position += velocity.normalized()*speed(300)*dt`. 키 입력 있으면(`velocity.length>0`) `_target=null`로 탭 취소(키보드 우선), 없으면 `_target`까지 한 걸음씩 가고 `toTarget.length<=step`에서 `position.setFrom(_target!)`로 스냅. **카메라**는 PC와 독립: 1손가락 드래그 첫 프레임에 `camera.stop()`(FollowBehavior 제거) 후 `viewfinder.position -= canvasDelta/zoom`, 핀치는 `zoomTo`(clamp 0.5~3.0), 롱탭 `resetView`는 줌1.0→`stop`→`viewfinder.position=player.position.clone()`→`follow(player)`.
+
+> **제스처 아레나 한 줄**: `TapGestureRecognizer`는 본질적으로 단일 포인터(PrimaryPointer 계열)라 두 번째 손가락이 닿는 순간 아레나에서 자동 REJECT → `ScaleGestureRecognizer`만 승리 → **핀치 중 PC가 이동하지 않음**. tap+scale 병용은 Flutter 표준(금지 조합은 pan+scale).
+
+**흔한 함정**
+- **핀치 중 PC 이동** → `TapCallbacks`가 두 손가락을 각 탭으로 오인. 탭을 `TapGestureRecognizer`로 분리하면 해결.
+- **트랙패드 줌이 두 배** → recognizer `supportedDevices`에 trackpad 포함 시 Listener와 이중 처리. trackpad 제외 → Listener 전담.
+- **드래그해도 카메라 제자리/탭한 곳과 다른 데로 이동** → 패닝 첫 프레임 `camera.stop()` 누락(FollowBehavior가 되돌림), 또는 canvas 좌표를 `camera.globalToLocal`로 월드 변환하지 않음.
+
+**실전 콤보 (현재 동작)**
+- **① 둘러보고 한 번에 이동**: 줌아웃 → 1손가락 드래그로 영역 찾기 → 탭(PC가 화면 밖이어도 그 지점으로 이동) → 롱탭(zoom 1.0 + PC 정중앙 + follow 재개로 원위치). follow가 풀려도 탭은 `globalToLocal`로 "지금 화면이 비추는 월드 좌표"를 정확히 집습니다.
+- **② 이동 중에도 시점 자유**: 줌아웃 → 드래그 → 탭(이동 시작) → 가는 도중 다시 드래그로 둘러보고 **재탭으로 목적지 즉시 교체**(`_target` 한 값) → 롱탭으로 복귀. 키보드를 누르면 `_target`이 취소돼 직접 조종으로 전환됩니다.
+- 카메라(줌·패닝·롱탭=시점)와 탭·키보드(PC 조종)가 분리돼 자유롭게 섞입니다.
+
+> **향후(미구현)**: 드래그 경로로 **주위 몬스터를 순차 자동 공격**하는 설계가
+> [tech-auto-targeting.md](tech-auto-targeting.md)에 있습니다(`DragCallbacks` 경로 누적 →
+> 점·선분 거리 필터 → 타겟 큐 + 쿨다운). 단 **현재 드래그는 패닝**이고 몬스터·전투
+> 시스템이 없으므로, 모드/제스처 분리 + 전투 도입(§Phase 2)이 선행돼야 합니다.
+
+전체 설명은 [게임 컨트롤 전체 문서](example/game-control.md). 관련 절: §5.4(입력 시스템 — 단 현재 코드는 `TapCallbacks` 대신 `RawGestureDetector`로 진화), §5.7(viewfinder zoom/pan), §5.10(클릭-투-무브), §5.11(`globalToLocal` 좌표 변환).
