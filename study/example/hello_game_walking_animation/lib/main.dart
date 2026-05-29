@@ -6,13 +6,9 @@ import 'package:flame/components.dart';
 //   "게임 본체"를 만드는 데 필요한 핵심 클래스들.
 import 'package:flame/game.dart';
 
-// flame/input.dart : KeyboardEvents mixin 등 키보드 입력 처리에 필요한 타입.
+// flame/input.dart : KeyboardEvents mixin 등 입력 처리에 필요한 타입.
 //   이 줄이 빠지면 `with KeyboardEvents`에서 컴파일 에러가 납니다.
 import 'package:flame/input.dart';
-
-// flame/events.dart : TapCallbacks mixin과 TapDownEvent 등 포인터(탭) 입력 타입.
-//   World에 `with TapCallbacks`를 붙이고 onTapDown을 쓰려면 이 import가 필요합니다.
-import 'package:flame/events.dart';
 
 // flutter/material.dart : runApp, Colors 등 Flutter 기본 도구.
 //   여기에서는 GameWidget을 Flutter 위젯 트리에 띄우기 위해 필요합니다.
@@ -20,11 +16,6 @@ import 'package:flutter/material.dart';
 
 // flutter/services.dart : LogicalKeyboardKey, KeyEvent 등 키보드 입력 타입.
 import 'package:flutter/services.dart';
-
-// flutter/gestures.dart : PointerScrollEvent(마우스 휠)와
-//   PointerPanZoomUpdateEvent(트랙패드·매직 마우스 제스처) 타입.
-//   GameWidget을 Listener로 감싸 마우스 휠 줌을 직접 처리하기 위해 필요합니다.
-import 'package:flutter/gestures.dart';
 
 /// 플레이어가 가질 수 있는 상태(state)를 표현하는 열거형입니다.
 ///
@@ -38,40 +29,14 @@ import 'package:flutter/gestures.dart';
 enum PlayerState { idle, running }
 
 void main() {
-  // 게임 인스턴스를 먼저 만들어, GameWidget과 줌 처리 Listener가 함께 참조합니다.
-  final game = MyGame();
-
   // GameWidget은 Flame 게임을 Flutter 위젯 트리에 올려 주는 위젯입니다.
   // 일반 Flutter 앱에서 MaterialApp을 runApp에 넣는 것처럼,
   // Flame 게임에서는 GameWidget에 게임 객체를 넣어 실행합니다.
   //
-  // 여기서는 GameWidget을 Flutter의 Listener로 한 번 더 감쌉니다.
-  //
-  // 왜 Flame의 ScrollDetector(onScroll)를 안 쓰나?
-  //   ScrollDetector는 PointerScrollEvent(전통적인 "클릭형" 마우스 휠)만 받습니다.
-  //   그런데 macOS의 트랙패드와 애플 매직 마우스의 표면 스와이프는
-  //   PointerScrollEvent가 아니라 "트랙패드 제스처"(PointerPanZoom*)로 전달되어
-  //   ScrollDetector에 잡히지 않습니다. 그래서 두 경로를 모두 직접 처리합니다.
-  runApp(
-    Listener(
-      // ① 일반 마우스 휠 — PointerScrollEvent로 들어옵니다.
-      onPointerSignal: (event) {
-        if (event is PointerScrollEvent) {
-          // 휠을 위로 굴리면 dy < 0 → 확대, 아래로 굴리면 dy > 0 → 축소.
-          game.zoomBy(event.scrollDelta.dy < 0 ? 1.1 : 1 / 1.1);
-        }
-      },
-      // ② 트랙패드 / 매직 마우스 표면 스와이프 — PointerPanZoom 제스처로 들어옵니다.
-      onPointerPanZoomUpdate: (event) {
-        // 작은 변화량이 연속으로 들어오므로 한 번에 조금씩만(1.03배) 줌합니다.
-        // 손가락을 위로 밀면 panDelta.dy < 0 → 확대.
-        // (방향이 직관과 반대로 느껴지면 아래 부등호를 뒤집으면 됩니다.)
-        final dy = event.panDelta.dy;
-        if (dy != 0) game.zoomBy(dy < 0 ? 1.03 : 1 / 1.03);
-      },
-      child: GameWidget(game: game),
-    ),
-  );
+  // GameWidget이 매 프레임 Flame의 게임 루프(update → render)를 자동으로
+  // 돌려 주므로, 개발자는 setState 같은 호출 없이 좌표만 바꾸면
+  // 다음 프레임에 알아서 화면이 갱신됩니다.
+  runApp(GameWidget(game: MyGame()));
 }
 
 /// 이 클래스가 실제 게임의 시작점입니다.
@@ -83,10 +48,6 @@ void main() {
 /// `with KeyboardEvents`는 키보드 입력 이벤트를 받기 위한 mixin입니다.
 /// 이 mixin이 붙은 클래스에서 onKeyEvent()를 오버라이드하면,
 /// 매 키 이벤트마다 Flame이 그 메서드를 자동으로 호출해 줍니다.
-///
-/// 줌(마우스 휠/트랙패드)은 Flame의 ScrollDetector 대신 main()의 Listener에서
-/// 받아 zoomBy()를 호출합니다. (이유는 main() 주석 참고 — 매직 마우스/트랙패드는
-/// PointerScrollEvent가 아니라 트랙패드 제스처로 들어오기 때문입니다.)
 class MyGame extends FlameGame with KeyboardEvents {
   // late는 "지금 바로 값은 없지만, 사용하기 전에는 반드시 넣겠다"는 뜻입니다.
   // player는 onLoad()에서 생성됩니다.
@@ -107,11 +68,6 @@ class MyGame extends FlameGame with KeyboardEvents {
   // 결과적으로 키를 꾹 누르고 있는 동안에는 매 프레임 그 키가 들어 있는
   // 집합이 전달되므로 캐릭터가 계속 이동하게 됩니다.
   final keys = <LogicalKeyboardKey>{};
-
-  // 기본 world 대신 탭 입력을 받을 수 있는 MyWorld를 사용하도록 교체합니다.
-  // FlameGame 생성자의 world: 인자에 넘기면, 부모의 `world` getter가 이
-  // 인스턴스를 가리키게 되어 아래 onLoad의 world.add(...)가 그대로 동작합니다.
-  MyGame() : super(world: MyWorld());
 
   @override
   Future<void> onLoad() async {
@@ -136,17 +92,6 @@ class MyGame extends FlameGame with KeyboardEvents {
     // "Animations not set" assertion이 발생합니다.
     // await를 붙이면 자식의 onLoad 완료를 기다리므로 안전합니다.
     await world.add(player);
-
-    // ── 게임 맵(world)에 나무 기물 추가 ─────────────────────────────────
-    //
-    // world가 곧 "게임 맵(게임 세계)"입니다. 여기에 add() 하면 맵 위에
-    // 기물이 놓입니다. player를 추가한 것과 완전히 같은 방식입니다.
-    //
-    // position을 지정하지 않으면 (0,0) = 맵 원점에 놓입니다. 여기서는
-    // 플레이어(화면 중앙 = size/2) 기준 오른쪽 위로 조금 떨어뜨려 둡니다.
-    await world.add(Tree()..position = size / 2 + Vector2(150, -100));
-    await world.add(Fountain()..position = size / 2 + Vector2(-100, 50));
-    await world.add(FlowerTree()..position = size / 2 + Vector2(200, -80));
 
     // camera.follow(player)는 카메라가 player를 따라가도록 설정합니다.
     // player가 움직이면 카메라도 함께 움직여 화면 중앙에 항상 player가
@@ -177,23 +122,6 @@ class MyGame extends FlameGame with KeyboardEvents {
     return KeyEventResult.handled;
   }
 
-  /// 현재 카메라 줌에 배율 [multiplier]를 곱하고 0.5~3.0 범위로 제한합니다.
-  /// main()의 Listener(마우스 휠/트랙패드 콜백)에서 호출됩니다.
-  ///
-  /// 줌은 카메라의 viewfinder가 담당합니다(치트시트 §5.6 참고).
-  ///   1.0 = 원본 배율, 2.0 = 2배 확대, 0.5 = 절반 축소
-  ///
-  /// 덧셈이 아니라 곱셈(multiplier)을 쓰는 이유: 어느 배율에서 굴려도 체감
-  /// 변화량이 비율로 일정해, 줌이 자연스럽게 느껴집니다.
-  void zoomBy(double multiplier) {
-    final double next = camera.viewfinder.zoom * multiplier;
-
-    // zoom은 0 이하가 될 수 없고(0 이하면 내부 assert로 크래시),
-    // 너무 크거나 작으면 화면이 깨지므로 0.5 ~ 3.0 범위로 제한합니다.
-    // clamp는 num을 반환하므로 toDouble()로 다시 double로 맞춰 줍니다.
-    camera.viewfinder.zoom = next.clamp(0.5, 3.0).toDouble();
-  }
-
   /// 매 프레임 Flame이 호출해 주는 게임 루프 메서드입니다.
   ///
   /// [dt]는 "지난 프레임 이후 흐른 시간(초)"입니다.
@@ -211,26 +139,6 @@ class MyGame extends FlameGame with KeyboardEvents {
   }
 }
 
-/// 게임 맵(세계)인 동시에 탭 입력을 받는 World입니다.
-///
-/// World에 `with TapCallbacks`를 붙이면, 이 World 영역에서 일어난 탭을
-/// onTapDown으로 받을 수 있습니다. 가장 큰 이점은 좌표계입니다.
-/// event.localPosition이 카메라 변환을 거친 "월드 좌표"로 들어오므로,
-/// 게임/위젯에 직접 탭 mixin을 붙였을 때 필요한 camera.globalToLocal()
-/// 변환을 생략할 수 있습니다.
-///
-/// `HasGameReference<MyGame>`로 game.player에 접근해, 탭한 지점을 플레이어의
-/// 이동 목적지로 넘겨 줍니다.
-class MyWorld extends World with TapCallbacks, HasGameReference<MyGame> {
-  /// 화면(이 World 영역)을 탭하면 Flame이 호출해 주는 메서드입니다.
-  @override
-  void onTapDown(TapDownEvent event) {
-    // event.localPosition : 이 World 좌표계 기준 탭 위치 = 곧 월드 좌표.
-    // 그대로 플레이어의 이동 목적지로 설정합니다.
-    game.player.setTarget(event.localPosition);
-  }
-}
-
 /// 플레이어를 나타내는 컴포넌트입니다.
 ///
 /// `SpriteAnimationGroupComponent<T>`는 "상태 T를 키로 여러 SpriteAnimation을
@@ -243,19 +151,9 @@ class MyWorld extends World with TapCallbacks, HasGameReference<MyGame> {
 /// `with HasGameReference<MyGame>` mixin은 컴포넌트 안에서 `game` 프로퍼티로
 /// 자기가 속한 게임 인스턴스에 접근할 수 있게 해 줍니다. MyGame 타입으로
 /// 지정해 두면 game.someCustomField 같은 접근이 타입 검사를 통과합니다.
-/// (Flame 1.33 이전의 HasGameRef는 deprecated. 현재 권장은 HasGameReference.)
+/// (HasGameRef는 Flame 1.28.0부터 deprecated. 현재 권장은 HasGameReference.)
 class Player extends SpriteAnimationGroupComponent
     with HasGameReference<MyGame> {
-  // 마우스 탭으로 지정된 이동 목적지(월드 좌표)입니다.
-  // null이면 "탭 이동 중이 아님"을 뜻합니다. 목적지에 도착하거나, 키보드로
-  // 직접 이동을 시작하면 다시 null로 비워집니다.
-  Vector2? _target;
-
-  /// 탭한 지점을 이동 목적지로 설정합니다. (MyWorld.onTapDown에서 호출)
-  void setTarget(Vector2 target) {
-    _target = target;
-  }
-
   @override
   Future<void> onLoad() async {
     // ── 1. idle 애니메이션 로드 ─────────────────────────────────────────
@@ -325,9 +223,6 @@ class Player extends SpriteAnimationGroupComponent
   /// 2) 상태(idle/running)를 전환하고
   /// 3) 실제 위치를 갱신합니다.
   void applyInput(Set<LogicalKeyboardKey> keys, double dt) {
-    // 1초당 이동 픽셀 수. 키보드 이동과 탭 이동이 함께 사용합니다.
-    const double speed = 300;
-
     // 방향 벡터를 매 프레임 0에서 다시 시작합니다.
     // 이전 프레임의 방향이 남아 있으면 키를 떼도 캐릭터가 계속 흘러갑니다.
     final velocity = Vector2.zero();
@@ -335,127 +230,39 @@ class Player extends SpriteAnimationGroupComponent
     // 각 방향 키를 누적해서 더합니다.
     // 위쪽과 아래쪽을 동시에 누르면 -1 + 1 = 0 이 되어 상하 이동이 상쇄됩니다.
     // (== 연산 대신 +=/-=로 누적하는 이유)
-    // 방향키(Arrow)와 WASD를 모두 지원합니다. 같은 방향은 OR로 묶어
-    // 둘 중 하나만 눌려도 동작하게 합니다. (W/A/S/D는 keyW/keyA/keyS/keyD)
-    if (keys.contains(LogicalKeyboardKey.arrowUp) ||
-        keys.contains(LogicalKeyboardKey.keyW)) {
+    if (keys.contains(LogicalKeyboardKey.arrowUp)) {
       velocity.y -= 1;
     }
-    if (keys.contains(LogicalKeyboardKey.arrowDown) ||
-        keys.contains(LogicalKeyboardKey.keyS)) {
+    if (keys.contains(LogicalKeyboardKey.arrowDown)) {
       velocity.y += 1;
     }
-    if (keys.contains(LogicalKeyboardKey.arrowLeft) ||
-        keys.contains(LogicalKeyboardKey.keyA)) {
+    if (keys.contains(LogicalKeyboardKey.arrowLeft)) {
       velocity.x -= 1;
     }
-    if (keys.contains(LogicalKeyboardKey.arrowRight) ||
-        keys.contains(LogicalKeyboardKey.keyD)) {
+    if (keys.contains(LogicalKeyboardKey.arrowRight)) {
       velocity.x += 1;
-    }
-
-    // ── 키보드 이동과 탭 이동의 우선순위 ─────────────────────────────────
-    //
-    // 키보드 입력이 하나라도 있으면(velocity != 0) 키보드를 우선하고
-    // 저장돼 있던 탭 목적지는 취소합니다. 키 입력이 전혀 없을 때만
-    // 탭으로 지정한 목적지를 향해 스스로 한 걸음씩 다가갑니다.
-    if (velocity.length > 0) {
-      _target = null;
-    } else if (_target != null) {
-      final toTarget = _target! - position; // 목적지까지의 방향·거리
-      final step = speed * dt; // 이번 프레임에 이동할 수 있는 거리
-      if (toTarget.length <= step) {
-        // 한 프레임 안에 도착 가능 → 정확히 목적지에 스냅하고 멈춥니다.
-        // (방향으로만 계속 밀면 목적지를 살짝 지나쳐 좌우로 떠는데,
-        //  이 스냅 처리가 그 떨림을 막습니다.)
-        position.setFrom(_target!);
-        _target = null;
-        current = PlayerState.idle;
-        return;
-      }
-      // 아직 멀면, 목적지 방향을 이번 프레임의 이동 방향으로 삼습니다.
-      velocity.setFrom(toTarget);
     }
 
     // ── 상태 전환의 핵심 ─────────────────────────────────────────────────
     //
-    // velocity.length가 0이면 idle, 0보다 크면 running으로 전환합니다.
-    // (키보드든 탭이든 결국 velocity가 0인지 아닌지로 판단합니다.)
-    // current에 같은 값을 매 프레임 대입해도 안전합니다(값이 바뀔 때만
-    // 애니메이션을 리셋함). 그래서 if로 감쌀 필요가 없습니다.
+    // velocity.length는 벡터의 길이(0 이상의 실수)입니다.
+    // 0이면 어떤 방향 키도 눌리지 않은 상태이므로 idle,
+    // 0보다 크면 이동 중이므로 running 으로 전환합니다.
+    //
+    // current에 같은 값을 매 프레임 대입해도 안전합니다(내부적으로 값이
+    // 바뀔 때만 애니메이션을 리셋함). 그래서 if로 감쌀 필요가 없습니다.
     current = velocity.length > 0 ? PlayerState.running : PlayerState.idle;
 
     // ── 위치 갱신의 핵심 ─────────────────────────────────────────────────
     //
-    // 공식: position += velocity.normalized() * speed * dt
+    // 공식: position += velocity * speed * dt
     //   velocity.normalized()  : 방향만 남기고 길이를 1로 (대각선 가속 방지)
     //   speed                  : 1초당 이동 픽셀 수
     //   dt                     : 이번 프레임에 흐른 시간(초)
     //
+    // 결과: "이번 프레임 동안 normalized 방향으로 speed * dt 픽셀 이동".
     // dt를 곱했으므로 FPS가 바뀌어도 실제 이동 속도는 일정합니다.
+    const double speed = 300;
     position += velocity.normalized() * speed * dt;
-  }
-}
-
-/// 게임 맵(world)에 고정 배치되는 "나무" 기물입니다.
-///
-/// SpriteComponent는 "이미지 한 장을 그대로 화면에 그려 주는" 컴포넌트입니다.
-/// 나무는 움직이거나 애니메이션할 필요가 없으므로, 플레이어가 쓰는
-/// SpriteAnimationGroupComponent보다 단순한 이 컴포넌트가 적합합니다.
-class Tree extends SpriteComponent with HasGameReference<MyGame> {
-  @override
-  Future<void> onLoad() async {
-    // game.loadSprite()는 PNG를 로드해 곧바로 Sprite 객체를 반환합니다.
-    // (game.images.load()는 Image를 반환하므로 Sprite(...)로 감싸야 하지만,
-    //  loadSprite는 그 과정까지 대신 해 줍니다.)
-    sprite = await game.loadSprite('tree.png');
-
-    // 화면에 표시할 크기(픽셀). 이미지 원본 크기와 무관하게 이 값으로 그려집니다.
-    size = Vector2(64, 128);
-
-    // position이 나무의 중심을 가리키도록 합니다.
-    anchor = Anchor.center;
-  }
-}
-
-/// 게임 맵(world)에 고정 배치되는 "꽃 나무" 기물입니다.
-///
-/// SpriteComponent는 "이미지 한 장을 그대로 화면에 그려 주는" 컴포넌트입니다.
-/// 꽃 나무는 움직이거나 애니메이션할 필요가 없으므로, 플레이어가 쓰는
-/// SpriteAnimationGroupComponent보다 단순한 이 컴포넌트가 적합합니다.
-class FlowerTree extends SpriteComponent with HasGameReference<MyGame> {
-  @override
-  Future<void> onLoad() async {
-    // game.loadSprite()는 PNG를 로드해 곧바로 Sprite 객체를 반환합니다.
-    // (game.images.load()는 Image를 반환하므로 Sprite(...)로 감싸야 하지만,
-    //  loadSprite는 그 과정까지 대신 해 줍니다.)
-    sprite = await game.loadSprite('flower_tree.png');
-
-    // 화면에 표시할 크기(픽셀). 이미지 원본 크기와 무관하게 이 값으로 그려집니다.
-    size = Vector2(128, 168);
-
-    // position이 나무의 중심을 가리키도록 합니다.
-    anchor = Anchor.center;
-  }
-}
-
-/// 게임 맵(world)에 고정 배치되는 "분수" 기물입니다.
-///
-/// SpriteComponent는 "이미지 한 장을 그대로 화면에 그려 주는" 컴포넌트입니다.
-/// 분수는 움직이거나 애니메이션할 필요가 없으므로, 플레이어가 쓰는
-/// SpriteAnimationGroupComponent보다 단순한 이 컴포넌트가 적합합니다.
-class Fountain extends SpriteComponent with HasGameReference<MyGame> {
-  @override
-  Future<void> onLoad() async {
-    // game.loadSprite()는 PNG를 로드해 곧바로 Sprite 객체를 반환합니다.
-    // (game.images.load()는 Image를 반환하므로 Sprite(...)로 감싸야 하지만,
-    //  loadSprite는 그 과정까지 대신 해 줍니다.)
-    sprite = await game.loadSprite('fountain.png');
-
-    // 화면에 표시할 크기(픽셀). 이미지 원본 크기와 무관하게 이 값으로 그려집니다.
-    size = Vector2(256, 256);
-
-    // position이 나무의 중심을 가리키도록 합니다.
-    anchor = Anchor.center;
   }
 }
